@@ -26,11 +26,12 @@ if not os.path.exists("logs"):
     os.makedirs("logs")
 
 sensor_logger = logging.getLogger("sensor_logger")
-sensor_logger.setLevel(logging.INFO)
-handler = RotatingFileHandler("logs/sensor_raw.log", maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
-formatter = logging.Formatter('%(asctime)s - %(message)s')
-handler.setFormatter(formatter)
-sensor_logger.addHandler(handler)
+if not sensor_logger.handlers:
+    sensor_logger.setLevel(logging.INFO)
+    handler = RotatingFileHandler("logs/sensor_raw.log", maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    handler.setFormatter(formatter)
+    sensor_logger.addHandler(handler)
 
 app = FastAPI(title="Farmtos MQTT Publisher")
 
@@ -85,4 +86,4 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("publisher:app", host="0.0.0.0", port=PUBLISHER_PORT, reload=True)
+    uvicorn.run("mqtt_publisher:app", host="0.0.0.0", port=PUBLISHER_PORT, reload=True)
