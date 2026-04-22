@@ -36,32 +36,53 @@ if not sensor_logger.handlers:
 app = FastAPI(title="Farmtos MQTT Publisher")
 
 is_active = True
+global_writer = None
 
 # Serial → MQTT Publisher
 async def serial_publisher():
+    global global_writer
     while True:
+        if not is_active:
+            await asyncio.sleep(1)
+            continue
+
         try:
             reader, writer = await serial_asyncio.open_serial_connection(
                 url=SERIAL_PORT, baudrate=SERIAL_BAUDRATE
             )
+            global_writer = writer
             print(f"{SERIAL_PORT} 접속 성공, 데이터 수신을 시작합니다.")
 
             async with Client(MQTT_HOST, MQTT_PORT, username=MQTT_USER, password=MQTT_PASSWORD) as client:
-                while True:
+                while is_active:
                     try:
-                        line = await reader.readuntil(b'\n')             
+                        line = await reader.readuntil(b'\n')
+                        if not line:
+                            break
                         line = line.decode().strip()
 
-                        if line and is_active:
+                        if line:
                             sensor_logger.info(line)
                             await client.publish(MQTT_TOPIC, line, qos=1)
 
                     except Exception as e:
-                        print("시리얼 통신 에러 (케이블 분리 등):", e)
+                        if is_active:
+                            print("시리얼 통신 에러 (케이블 분리 등):", e)
+                        else:
+                            print("사용자 요청으로 시리얼 연결을 종료했습니다.")
                         break
         
         except Exception as e:
-            print(f"{SERIAL_PORT} 포트를 찾을 수 없거나 열 수 없습니다. 3초 후 재시도합니다.", e)
+            if is_active:
+                print(f"{SERIAL_PORT} 포트를 찾을 수 없거나 열 수 없습니다. 3초 후 재시도합니다.", e)
+                
+        finally:
+            if global_writer:
+                try:
+                    global_writer.close()
+                except Exception:
+                    pass
+                global_writer = None
             
         await asyncio.sleep(3)
 
@@ -75,9 +96,19 @@ async def get_receive_status():
 
 @app.post("/api/toggle")
 async def toggle_receive_status():
-    global is_active
+    global is_active, global_writer
     is_active = not is_active
     state_str = "ON" if is_active else "OFF"
+    
+    if not is_active:
+        if global_writer:
+            print("시리얼 포트 연결을 해제합니다.")
+            try:
+                global_writer.close()
+            except Exception:
+                pass
+            global_writer = None
+
     return {"is_active": is_active, "message": f"Publisher 데이터 수집이 {state_str} 되었습니다."}
 
 @app.get("/health")
