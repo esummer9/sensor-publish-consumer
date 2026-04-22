@@ -22,7 +22,7 @@ STATS_INTERVAL_MINUTES = int(os.getenv("STATS_INTERVAL_MINUTES", "10"))
 app = FastAPI(title="Farmtos MQTT Consumer")
 
 is_active = True
-DB_FILE = "base_sensor_raw2.db"
+DB_FILE = "base_sensor_raw.db"
 
 # DB
 def init_db():
@@ -37,6 +37,7 @@ def init_db():
     ''')
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensor_type ON sensor_data(sensor_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON sensor_data(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensor_line ON sensor_data(sensor_line)")
     conn.close()
 
 db_buffer = []
