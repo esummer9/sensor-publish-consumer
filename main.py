@@ -20,7 +20,7 @@ MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "admin")
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "farm/sensors/all")
 CONSUMER_PORT = int(os.getenv("CONSUMER_PORT", "8001"))
 STATS_INTERVAL_MINUTES = int(os.getenv("STATS_INTERVAL_MINUTES", "10"))
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "6694700477")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "6698600477")
 EXPORT_DAYS = int(os.getenv("EXPORT_DAYS", "2"))
 
 app = FastAPI(title="Farmtos MQTT Consumer")

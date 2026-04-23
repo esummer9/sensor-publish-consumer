@@ -57,6 +57,9 @@ async def serial_publisher():
                     while is_active:
                         try:
                             line = await reader.readuntil(b'\n')
+                            
+                            print(f"시리얼포트 {SERIAL_PORT} | 데이터 : {line}")
+                            
                             if not line:
                                 break
                             line = line.decode().strip()
