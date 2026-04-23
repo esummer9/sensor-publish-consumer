@@ -10,7 +10,7 @@ from logging.handlers import RotatingFileHandler
 load_dotenv()
 
 # 환경 변수 로드
-SERIAL_PORT = os.getenv("SERIAL_PORT", "COM6")
+SERIAL_PORT = os.getenv("SERIAL_PORT", "COM7")
 SERIAL_BAUDRATE = int(os.getenv("SERIAL_BAUDRATE", "115200"))
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -43,7 +43,7 @@ async def serial_publisher():
     global global_writer
     while True:
         if not is_active:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             continue
 
         try:
@@ -52,29 +52,34 @@ async def serial_publisher():
             )
             global_writer = writer
             print(f"{SERIAL_PORT} 접속 성공, 데이터 수신을 시작합니다.")
+            try:
+                async with Client(MQTT_HOST, MQTT_PORT, username=MQTT_USER, password=MQTT_PASSWORD) as client:
+                    while is_active:
+                        try:
+                            line = await reader.readuntil(b'\n')
+                            if not line:
+                                break
+                            line = line.decode().strip()
 
-            async with Client(MQTT_HOST, MQTT_PORT, username=MQTT_USER, password=MQTT_PASSWORD) as client:
-                while is_active:
-                    try:
-                        line = await reader.readuntil(b'\n')
-                        if not line:
+                            if line:
+                                sensor_logger.info(line)
+                                await client.publish(MQTT_TOPIC, line, qos=1)
+
+                        except Exception as e:
+                            if is_active:
+                                print("시리얼 통신 에러 (케이블 분리 등):", e)
+                                sensor_logger.error(f"시리얼 통신 에러: {e}")
+                            else:
+                                print("사용자 요청으로 시리얼 연결을 종료했습니다.")
                             break
-                        line = line.decode().strip()
+            except Exception as e:
+                print(f"{MQTT_HOST}:{MQTT_PORT} MQTT 브로커가 실행 중인지 확인하세요.", e)
+                sensor_logger.error(f"MQTT 연결 에러: {e}")
 
-                        if line:
-                            sensor_logger.info(line)
-                            await client.publish(MQTT_TOPIC, line, qos=1)
-
-                    except Exception as e:
-                        if is_active:
-                            print("시리얼 통신 에러 (케이블 분리 등):", e)
-                        else:
-                            print("사용자 요청으로 시리얼 연결을 종료했습니다.")
-                        break
-        
         except Exception as e:
             if is_active:
                 print(f"{SERIAL_PORT} 포트를 찾을 수 없거나 열 수 없습니다. 3초 후 재시도합니다.", e)
+                sensor_logger.error(f"시리얼 포트 열기 에러: {e}")
                 
         finally:
             if global_writer:
