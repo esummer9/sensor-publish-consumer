@@ -47,6 +47,12 @@ venv.bak/
 *.log
 logs/
 
+# Excel Files
+*.xlsx
+*.xlsm
+*.xlsb
+*.ods
+
 # IDEs / Editor
 .vscode/
 .idea/
