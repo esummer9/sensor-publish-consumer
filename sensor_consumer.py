@@ -309,9 +309,11 @@ async def db_of_writer():
                 insert_weather_station_data(cur, conn, weather_station_items, sensor_ids)
 
                 print(f"--- other_items ({len(other_items)}건) ---")
+                
+                created_date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
                 for i in other_items: print(i)
                 
-                print("======================================")
+                print(f"{'=' * 20} {created_date_time} {'=' * 20}")
 
                 # if other_items:
                 #     print(f"--- other_items ({len(other_items)}건) ---")
