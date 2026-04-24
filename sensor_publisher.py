@@ -138,4 +138,4 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("mqtt_publisher:app", host="0.0.0.0", port=PUBLISHER_PORT, reload=True)
+    uvicorn.run("sensor_publisher:app", host="0.0.0.0", port=PUBLISHER_PORT, reload=True)
