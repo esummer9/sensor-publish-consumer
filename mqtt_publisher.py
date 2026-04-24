@@ -2,10 +2,12 @@ import os
 import asyncio
 from fastapi import FastAPI
 import serial_asyncio
+from datetime import datetime, timedelta
 from asyncio_mqtt import Client
 from dotenv import load_dotenv
 import logging
 from logging.handlers import RotatingFileHandler
+import json
 
 load_dotenv()
 
@@ -55,6 +57,7 @@ async def serial_publisher():
             try:
                 async with Client(MQTT_HOST, MQTT_PORT, username=MQTT_USER, password=MQTT_PASSWORD) as client:
                     while is_active:
+                        created_date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
                         try:
                             line = await reader.readuntil(b'\n')
                             
@@ -65,6 +68,16 @@ async def serial_publisher():
                             line = line.decode().strip()
 
                             if line:
+                                try:
+                                    data_dict = json.loads(line)
+                                    for key, val in data_dict.items():
+                                        if isinstance(val, dict):
+                                            val['created_date_time'] = created_date_time
+                                    line = json.dumps(data_dict)
+                                except Exception as e:
+                                    print("JSON Parse Error:", e)
+
+                                print('line', line)
                                 sensor_logger.info(line)
                                 await client.publish(MQTT_TOPIC, line, qos=1)
 

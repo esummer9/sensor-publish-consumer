@@ -55,7 +55,6 @@ db_buffer = []
 db_of_buffer = []
 
 def insert_data(data):
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for sensor_type, values in data.items():
         # print(sensor_type,"|", values)
@@ -66,15 +65,15 @@ def insert_data(data):
 
             for val in values['value'].split("|"):
                 raw_val = values['raw'].split("|")[pos]
-                db_buffer.append((f"{types[pos].upper()}", raw_val, val, sensor_type, values['collector'], current_time))
+                db_buffer.append((f"{types[pos].upper()}", raw_val, val, sensor_type, values['collector'], values['created_date_time']))
                 pos += 1
         except:
-            db_buffer.append((values['desc'].upper(), values['raw'], values['value'], sensor_type, values['collector'], current_time))
+            db_buffer.append((values['desc'].upper(), values['raw'], values['value'], sensor_type, values['collector'], values['created_date_time']))
 
         values['FARM_CODE'] = FARM_CODE
         values['FARM_ID'] = FARM_ID
         values['sensor_type'] = sensor_type 
-        values['current_time'] = current_time 
+        values['current_time'] = values['created_date_time'] 
         
         db_of_buffer.append((sensor_type, values))
 
@@ -105,7 +104,7 @@ def insert_solar_data(cur, conn, solar_items, sensor_ids):
     for item in solar_items:
         farm_device_id = sensor_ids.get(item.get('sensor_type'), 0)
         farm_id = item.get('FARM_ID')
-        collect_date = item.get('current_time')
+        collect_date = item.get('created_date_time')
         
         # 값 파싱 (단일 값이거나 파이프로 구분된 값일 수 있음)
         val_str = str(item.get('value', None))
@@ -141,7 +140,7 @@ def insert_weather_station_data(cur, conn, weather_station_items, sensor_ids):
     for item in weather_station_items:
         farm_device_id = sensor_ids.get(item.get('sensor_type'), 0)
         farm_id = item.get('FARM_ID')
-        collect_date = item.get('current_time')
+        collect_date = item.get('created_date_time')
         
         val_str = str(item.get('value', None))
         val = float(val_str) if (val_str and val_str != 'None') else None
@@ -185,6 +184,84 @@ def insert_weather_station_data(cur, conn, weather_station_items, sensor_ids):
         except Exception as e:
             print("tb_farmtos_of_collect_weather_station Insert Error:", e)
 
+def insert_fdr_data(cur, conn, fdr_items, sensor_ids):
+    if not fdr_items:
+        return
+        
+    fdr_insert_data = []
+    for item in fdr_items:
+        farm_device_id = sensor_ids.get(item.get('sensor_type'), 0)
+        farm_id = item.get('FARM_ID')
+        collect_date = item.get('created_date_time')
+        
+        val_str = str(item.get('value', None))
+        desc = item.get('desc', '')
+        
+        soil_temperature_value = None
+        soil_humidity_value = None
+        soil_ec = None
+        
+        if '|' in val_str:
+            vals = val_str.split('|')
+            try:
+                soil_humidity_value = float(vals[0]) if len(vals) > 0 and vals[0] and vals[0] != 'None' else None
+                soil_temperature_value = float(vals[1]) if len(vals) > 1 and vals[1] and vals[1] != 'None' else None
+                soil_ec = float(vals[2]) if len(vals) > 2 and vals[2] and vals[2] != 'None' else None
+            except ValueError:
+                pass
+        else:
+            val = None
+            try:
+                val = float(val_str) if (val_str and val_str != 'None') else None
+            except ValueError:
+                pass
+                
+            desc_upper = desc.upper()
+            if 'TEMP' in desc_upper or '온도' in desc_upper:
+                soil_temperature_value = val
+            elif 'HUMI' in desc_upper or '습도' in desc_upper:
+                soil_humidity_value = val
+            elif 'EC' in desc_upper:
+                soil_ec = val
+        
+        is_outlier = 0
+        is_missing = 0
+        
+        sensor_origin = {'temperature': soil_temperature_value, 'humidity': soil_humidity_value, 'ec': soil_ec}
+        fdr_insert_data.append((
+            farm_device_id, farm_id, collect_date, 
+            soil_temperature_value, soil_humidity_value, soil_ec,
+            f'{sensor_origin}', is_outlier, is_missing
+        ))
+        
+    if fdr_insert_data:
+        try:
+            cur.executemany("""
+                INSERT INTO tb_farmtos_of_collect_fdr 
+                (farm_device_id, farm_id, collect_date, 
+                 soil_temperature_value, soil_humidity_value, soil_ec, 
+                 sensor_origin, is_outlier, is_missing) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, fdr_insert_data)
+            conn.commit()
+            
+            # tb_farm_device와 조인하여 위치 정보(latitude, longitude, width_x, height_y) 업데이트 (후처리)
+            cur.execute("""
+                UPDATE tb_farmtos_of_collect_fdr
+                SET 
+                    latitude = (SELECT latitude FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id),
+                    longitude = (SELECT longitude FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id),
+                    width_x = (SELECT width_x FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id),
+                    height_y = (SELECT height_y FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id)
+                WHERE 
+                    latitude IS NULL 
+                    AND farm_device_id IN (SELECT farm_device_id FROM tb_farm_device)
+            """)
+            conn.commit()
+        except Exception as e:
+            print("tb_farmtos_of_collect_fdr Insert Error:", e)
+
+
 async def db_of_writer():
     sensor_ids = {"rs485_1":24, "rs485_2":18, "a0":23, "a1":25, "a2":19, "a3":20}
 
@@ -193,8 +270,6 @@ async def db_of_writer():
         if db_of_buffer:
             items = db_of_buffer[:]
             db_of_buffer.clear()
-            
-            created_date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             try:
                 conn = sqlite3.connect(OF_DB_FILE)
@@ -223,9 +298,7 @@ async def db_of_writer():
                         other_items.append(item)
 
                 print(f"--- fdr_items ({len(fdr_items)}건) ---")
-                for i in fdr_items: 
-                    print(i)
-                    
+                insert_fdr_data(cur, conn, fdr_items, sensor_ids)
                 
                 print(f"--- solar_items ({len(solar_items)}건) ---")
                 # 별도 분리된 함수로 solar_items db 등록 호출
