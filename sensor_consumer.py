@@ -96,10 +96,20 @@ db_buffer = []
 
 db_of_buffer = []
 
+insert_count = 0
+
 def insert_data(data):
+    global insert_count
 
     for sensor_type, values in data.items():
-        # print(sensor_type,"|", values)
+        insert_count += 1
+        if insert_count % 20 == 0:
+            print(insert_count, datetime.now())
+        else:
+            print(".", end="", flush=True)
+        
+        if insert_count % 1000000 == 0:
+            insert_count = 0
 
         try:
             types = values['desc'].split("|")
