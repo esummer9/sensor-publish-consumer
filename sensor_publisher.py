@@ -131,10 +131,7 @@ async def toggle_receive_status():
             global_writer = None
 
     return {"is_active": is_active, "message": f"Publisher 데이터 수집이 {state_str} 되었습니다."}
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "publisher", "is_active": is_active}
+    
 
 if __name__ == "__main__":
     import uvicorn
