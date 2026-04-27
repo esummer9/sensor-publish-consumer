@@ -9,6 +9,8 @@ from fastapi.responses import HTMLResponse, FileResponse
 from asyncio_mqtt import Client
 from dotenv import load_dotenv
 import openpyxl
+import statistics
+from collections import Counter
 
 load_dotenv()
 
@@ -20,6 +22,7 @@ MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "admin")
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "farm/sensors/all")
 CONSUMER_PORT = int(os.getenv("CONSUMER_PORT", "8001"))
 STATS_INTERVAL_MINUTES = int(os.getenv("STATS_INTERVAL_MINUTES", "10"))
+STATS_INTERVAL_HOUR = int(os.getenv("STATS_INTERVAL_HOUR", "1"))
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "6698600477")
 EXPORT_DAYS = int(os.getenv("EXPORT_DAYS", "2"))
 
@@ -29,13 +32,13 @@ FARM_ID = os.getenv("FARM_ID", "58")
 app = FastAPI(title="Farmtos MQTT Consumer")
 
 is_active = True
-DB_FILE = os.getenv("DB_FILE", "base_sensor_raw423.db")
+DB_FILE = os.getenv("DB_FILE", "sensor_raw.db")
 OF_DB_FILE = os.getenv("OF_DB_FILE", "./farmtos_of.db")
 
 # DB
 def init_db():
     conn = sqlite3.connect(DB_FILE)
-    conn.execute(''' CREATE TABLE IF NOT EXISTS sensor_data (
+    conn.execute(''' CREATE TABLE IF NOT EXISTS sensor_raw (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sensor_type TEXT,
         raw_value TEXT,
@@ -44,10 +47,49 @@ def init_db():
         collector_id TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP )
     ''')
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensor_type ON sensor_data(sensor_type)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON sensor_data(created_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensor_line ON sensor_data(sensor_line)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_id ON sensor_data(collector_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensor_type ON sensor_raw(sensor_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON sensor_raw(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensor_line ON sensor_raw(sensor_line)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_id ON sensor_raw(collector_id)")
+    
+    conn.execute(''' CREATE TABLE IF NOT EXISTS sensor_minute_sum (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sensor_line TEXT,
+        sensor_type TEXT,
+        summary_time DATETIME,
+        summary_value REAL,
+        summary_accumulated_value REAL,
+        data_count INTEGER,
+        outlier_count INTEGER,
+        missing_count INTEGER,
+        summary_interval INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_minute_sum_time ON sensor_minute_sum(summary_time)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_minute_sum_type ON sensor_minute_sum(sensor_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_minute_sum_outlier ON sensor_minute_sum(outlier_count)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_minute_sum_missing ON sensor_minute_sum(missing_count)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_minute_sum_interval ON sensor_minute_sum(summary_interval)")
+    
+    conn.execute(''' CREATE TABLE IF NOT EXISTS sensor_hour_sum (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sensor_line TEXT,
+        sensor_type TEXT,
+        summary_time DATETIME,
+        summary_value REAL,
+        summary_accumulated_value REAL,
+        data_count INTEGER,
+        outlier_count INTEGER,
+        missing_count INTEGER,
+        summary_interval INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hour_sum_time ON sensor_hour_sum(summary_time)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hour_sum_type ON sensor_hour_sum(sensor_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hour_sum_outlier ON sensor_hour_sum(outlier_count)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hour_sum_missing ON sensor_hour_sum(missing_count)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hour_sum_interval ON sensor_hour_sum(summary_interval)")
+    
     conn.close()
 
 db_buffer = []
@@ -88,7 +130,7 @@ async def db_writer():
                 conn = sqlite3.connect(DB_FILE)
                 cur = conn.cursor()
                 cur.executemany("""
-                INSERT INTO sensor_data (sensor_type, raw_value, measured_value, sensor_line, collector_id, created_at)
+                INSERT INTO sensor_raw (sensor_type, raw_value, measured_value, sensor_line, collector_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """, items)
                 conn.commit()
@@ -321,7 +363,9 @@ async def db_of_writer():
                 for item in items:
                     sensor_type = item[0]
                     if "rs485_1" in sensor_type:
-                        fdr_items.append(item[1])
+                        # fdr_items.append(item[1])
+                        # 노지의 경우 fdr 센서는 안쓰므로 주석처리
+                        pass
                     elif "rs485_2" in sensor_type:
                         solar_items.append(item[1])
                     elif "a0" in sensor_type:
@@ -396,25 +440,173 @@ async def stats_routine():
             cur = conn.cursor()
             cur.execute("""
                 SELECT sensor_line, COUNT(*) as count, MAX(created_at) as last_time
-                FROM sensor_data
+                FROM sensor_raw
                 GROUP BY sensor_line
             """)
             rows = cur.fetchall()
             conn.close()
             
-            stats = [dict(row) for row in rows]
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Periodic Sensor Stats:")
-            print(json.dumps(stats, ensure_ascii=False, indent=2))
+            # stats = [dict(row) for row in rows]
+            # print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Periodic Sensor Stats:")
+            # print(json.dumps(stats, ensure_ascii=False, indent=2))
         except Exception as e:
             print("Stats Routine Error:", e)
+
+def remove_outliers_iqr(data):
+    if len(data) < 4:
+        return data, 0
+    
+    sorted_data = sorted(data)
+    n = len(sorted_data)
+    q1 = sorted_data[n // 4]
+    q3 = sorted_data[(n * 3) // 4]
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    
+    filtered_data = [x for x in data if lower_bound <= x <= upper_bound]
+    outliers_count = len(data) - len(filtered_data)
+    
+    return filtered_data, outliers_count
+
+async def run_summary_routine(interval_value, is_hourly, table_name):
+    sleep_seconds = interval_value * 3600 if is_hourly else interval_value * 60
+    while True:
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            
+            cur.execute(f"SELECT MAX(summary_time) FROM {table_name}")
+            last_summary_time_str = cur.fetchone()[0]
+            
+            now = datetime.now()
+            if is_hourly:
+                current_summary_time = now.replace(minute=0, second=0, microsecond=0)
+            else:
+                current_summary_time = now.replace(minute=(now.minute // interval_value) * interval_value, second=0, microsecond=0)
+            
+            current_summary_str = current_summary_time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            if not last_summary_time_str:
+                if is_hourly:
+                    last_summary_time = current_summary_time - timedelta(hours=interval_value)
+                else:
+                    last_summary_time = current_summary_time - timedelta(minutes=interval_value)
+                last_summary_time_str = last_summary_time.strftime("%Y-%m-%d %H:%M:%S")
+                
+            if last_summary_time_str >= current_summary_str:
+                conn.close()
+                await asyncio.sleep(sleep_seconds)
+                continue
+                
+            cur.execute("""
+                SELECT sensor_line, sensor_type, measured_value, raw_value
+                FROM sensor_raw
+                WHERE created_at > ? AND created_at <= ? AND measured_value IS NOT NULL
+            """, (last_summary_time_str, current_summary_str))
+            
+            rows = cur.fetchall()
+            
+            grouped_data = {}
+            missing_counts = {}
+            for row in rows:
+                key = (row['sensor_line'], row['sensor_type'])
+                if key not in grouped_data:
+                    grouped_data[key] = []
+                    missing_counts[key] = 0
+                
+                if str(row['raw_value']) == '9999999':
+                    missing_counts[key] += 1
+                else:
+                    try:
+                        grouped_data[key].append(float(row['measured_value']))
+                    except (ValueError, TypeError):
+                        pass
+                
+            insert_data = []
+            
+            for (sensor_line, sensor_type), values in grouped_data.items():
+                filtered_values, outlier_count = remove_outliers_iqr(values)
+                missing_count = missing_counts[(sensor_line, sensor_type)]
+                
+                if not filtered_values and missing_count == 0:
+                    continue
+                    
+                data_count = len(filtered_values)
+                summary_value = None
+                
+                if filtered_values:
+                    type_upper = sensor_type.upper()
+                    if 'RAIN' in type_upper or 'PHOTON' in type_upper:
+                        # 합계 사용
+                        summary_value = sum(filtered_values)
+                    elif 'SOLAR' in type_upper:
+                        # 평균값 사용
+                        summary_value = statistics.mean(filtered_values)
+                    elif 'WIND' in type_upper and 'DIR' in type_upper:
+                        # 최빈값 사용
+                        count = Counter(filtered_values)
+                        summary_value = count.most_common(1)[0][0]
+                    else:
+                        # 중앙값 사용
+                        summary_value = statistics.median(filtered_values)
+                        
+                summary_accumulated_value = None
+                type_upper = sensor_type.upper()
+                if 'SOLAR' in type_upper and summary_value is not None:
+                    accum_start_time = current_summary_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                    accum_start_str = accum_start_time.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    cur.execute(f"""
+                        SELECT summary_value, summary_interval 
+                        FROM {table_name}
+                        WHERE sensor_line = ? AND sensor_type = ? 
+                          AND summary_time > ? AND summary_time <= ?
+                    """, (sensor_line, sensor_type, accum_start_str, last_summary_time_str))
+                    
+                    past_rows = cur.fetchall()
+                    past_energy_sum = 0.0
+                    for r in past_rows:
+                        if r['summary_value'] is not None and r['summary_interval'] is not None:
+                            past_interval_sec = r['summary_interval'] * 3600 if is_hourly else r['summary_interval'] * 60
+                            past_energy_sum += (float(r['summary_value']) * past_interval_sec) / 1000000.0
+                            
+                    interval_sec = interval_value * 3600 if is_hourly else interval_value * 60
+                    current_energy = (summary_value * interval_sec) / 1000000.0
+                    
+                    summary_accumulated_value = round(past_energy_sum + current_energy, 4)
+                    
+                insert_data.append((
+                    sensor_line, sensor_type, current_summary_str, 
+                    summary_value, summary_accumulated_value, data_count, outlier_count, missing_count, interval_value
+                ))
+                
+            if insert_data:
+                cur.executemany(f"""
+                    INSERT INTO {table_name} (sensor_line, sensor_type, summary_time, summary_value, summary_accumulated_value, data_count, outlier_count, missing_count, summary_interval)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_data)
+                conn.commit()
+                log_prefix = "Summarized (Hourly)" if is_hourly else "Summarized"
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {log_prefix} {len(insert_data)} sensor types/lines up to {current_summary_str}.")
+                
+            conn.close()
+        except Exception as e:
+            err_prefix = "Summarize Hour Routine Error" if is_hourly else "Summarize Routine Error"
+            print(f"{err_prefix}:", e)
+            
+        await asyncio.sleep(sleep_seconds)
 
 @app.on_event("startup")
 async def startup():
     init_db()
     asyncio.create_task(db_writer())
-    asyncio.create_task(db_of_writer())
+    # asyncio.create_task(db_of_writer())
     asyncio.create_task(mqtt_consumer())
     asyncio.create_task(stats_routine())
+    asyncio.create_task(run_summary_routine(STATS_INTERVAL_MINUTES, False, "sensor_minute_sum"))
+    asyncio.create_task(run_summary_routine(STATS_INTERVAL_HOUR, True, "sensor_hour_sum"))
 
 @app.get("/api/stats")
 async def get_sensor_stats():
@@ -424,7 +616,7 @@ async def get_sensor_stats():
         cur = conn.cursor()
         cur.execute("""
             SELECT sensor_line, COUNT(*) as count, MAX(created_at) as last_time
-            FROM sensor_data
+            FROM sensor_raw
             GROUP BY sensor_line
         """)
         rows = cur.fetchall()
@@ -499,7 +691,7 @@ async def export_data(password: str = Form(...)):
         conn = sqlite3.connect(DB_FILE)
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, sensor_type, measured_value, raw_value, sensor_line, collector_id, created_at FROM sensor_data WHERE created_at >= ? ORDER BY id ASC",
+            "SELECT id, sensor_type, measured_value, raw_value, sensor_line, collector_id, created_at FROM sensor_raw WHERE created_at >= ? ORDER BY id ASC",
             (time_ago,)
         )
         rows = cur.fetchall()
@@ -538,7 +730,7 @@ async def health():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM sensor_data")
+    cur.execute("SELECT COUNT(*) FROM sensor_raw")
     count = cur.fetchone()[0]
     conn.close()
     
