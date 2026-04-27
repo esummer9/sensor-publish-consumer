@@ -261,9 +261,46 @@ def insert_fdr_data(cur, conn, fdr_items, sensor_ids):
         except Exception as e:
             print("tb_farmtos_of_collect_fdr Insert Error:", e)
 
+def insert_rain_data(cur, conn, rain_items, sensor_ids):
+    if not rain_items:
+        return
+        
+    rain_insert_data = []
+    for item in rain_items:
+        farm_device_id = sensor_ids.get(item.get('sensor_type'), 0)
+        farm_id = item.get('FARM_ID')
+        collect_date = item.get('created_date_time')
+        
+        val_str = str(item.get('value', None))
+        
+        raindrop = None
+        try:
+            raindrop = float(val_str) if (val_str and val_str != 'None') else None
+        except ValueError:
+            pass
+            
+        is_outlier = 0
+        is_missing = 0
+        
+        rain_insert_data.append((
+            farm_device_id, farm_id, collect_date, 
+            raindrop, is_outlier, is_missing
+        ))
+
+    if rain_insert_data:
+        try:
+            cur.executemany("""
+                INSERT INTO tb_farmtos_of_collect_raindrop 
+                (farm_device_id, farm_id, collect_date, raindrop, is_outlier, is_missing) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, rain_insert_data)
+            conn.commit()
+        except Exception as e:
+            print("tb_farmtos_of_collect_raindrop Insert Error:", e)
+
 
 async def db_of_writer():
-    sensor_ids = {"rs485_1":24, "rs485_2":18, "a0":23, "a1":25, "a2":19, "a3":20}
+    sensor_ids = {"rs485_1":24, "rs485_2":18, "a0":23, "a1":22, "a2":19, "a3":20}
 
     while True:
         await asyncio.sleep(2)
@@ -277,6 +314,7 @@ async def db_of_writer():
                 
                 fdr_items = []
                 solar_items = []
+                rain_items = []
                 weather_station_items = []
                 other_items = []
 
@@ -289,7 +327,7 @@ async def db_of_writer():
                     elif "a0" in sensor_type:
                         weather_station_items.append(item[1])
                     elif "a1" in sensor_type: 
-                        solar_items.append(item[1])
+                        rain_items.append(item[1])
                     elif "a2" in sensor_type:   
                         weather_station_items.append(item[1])
                     elif "a3" in sensor_type:   
@@ -304,6 +342,8 @@ async def db_of_writer():
                 # 별도 분리된 함수로 solar_items db 등록 호출
                 insert_solar_data(cur, conn, solar_items, sensor_ids)
 
+                print(f"--- rain_items ({len(rain_items)}건) ---")
+                insert_rain_data(cur, conn, rain_items, sensor_ids)
                 
                 print(f"--- weather_station_items ({len(weather_station_items)}건) ---")
                 insert_weather_station_data(cur, conn, weather_station_items, sensor_ids)
@@ -313,7 +353,7 @@ async def db_of_writer():
                 created_date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
                 for i in other_items: print(i)
                 
-                print(f"{'=' * 20} {created_date_time} {'=' * 20}")
+                print(f"{'=' * 20} {'Sensor Consumer End :'} {created_date_time} {'=' * 20}")
 
                 # if other_items:
                 #     print(f"--- other_items ({len(other_items)}건) ---")
@@ -371,7 +411,7 @@ async def stats_routine():
 @app.on_event("startup")
 async def startup():
     init_db()
-    # asyncio.create_task(db_writer())
+    asyncio.create_task(db_writer())
     asyncio.create_task(db_of_writer())
     asyncio.create_task(mqtt_consumer())
     asyncio.create_task(stats_routine())
