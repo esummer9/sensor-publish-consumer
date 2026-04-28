@@ -92,6 +92,22 @@ def init_db():
     
     conn.close()
 
+    try:
+        of_conn = sqlite3.connect(OF_DB_FILE)
+        of_conn.execute(''' CREATE TABLE IF NOT EXISTS sensor_raw_latest (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sensor_type TEXT,
+            raw_value TEXT,
+            measured_value REAL,
+            sensor_line TEXT,
+            collector_id TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(sensor_type, sensor_line) )
+        ''')
+        of_conn.close()
+    except Exception as e:
+        print("OF DB Init Error:", e)
+
 db_buffer = []
 
 db_of_buffer = []
@@ -145,6 +161,20 @@ async def db_writer():
                 """, items)
                 conn.commit()
                 conn.close()
+                
+                of_conn = sqlite3.connect(OF_DB_FILE)
+                of_cur = of_conn.cursor()
+                of_cur.executemany("""
+                INSERT INTO sensor_raw_latest (sensor_type, raw_value, measured_value, sensor_line, collector_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sensor_type, sensor_line) DO UPDATE SET
+                    raw_value=excluded.raw_value,
+                    measured_value=excluded.measured_value,
+                    collector_id=excluded.collector_id,
+                    created_at=excluded.created_at
+                """, items)
+                of_conn.commit()
+                of_conn.close()
             except Exception as e:
                 print("DB Bulk Insert Error:", e)
 
@@ -352,7 +382,7 @@ def insert_rain_data(cur, conn, rain_items, sensor_ids):
 
 
 async def db_of_writer():
-    sensor_ids = {"rs485_1":24, "rs485_2":18, "a0":23, "a1":22, "a2":19, "a3":20}
+    sensor_ids = {"rs485_1":21, "rs485_2":18, "a0":23, "a1":22, "a2":19, "a3":20}
 
     while True:
         await asyncio.sleep(2)
@@ -471,8 +501,8 @@ def remove_outliers_iqr(data):
     q1 = sorted_data[n // 4]
     q3 = sorted_data[(n * 3) // 4]
     iqr = q3 - q1
-    lower_bound = q1 - 1.5 * iqr
-    upper_bound = q3 + 1.5 * iqr
+    lower_bound = q1 - 1.5 * iqr  # Tukey's Fences 하한선
+    upper_bound = q3 + 1.5 * iqr  # Tukey's Fences 상한선   
     
     filtered_data = [x for x in data if lower_bound <= x <= upper_bound]
     outliers_count = len(data) - len(filtered_data)
@@ -551,7 +581,7 @@ async def run_summary_routine(interval_value, is_hourly, table_name):
                     if 'RAIN' in type_upper or 'PHOTON' in type_upper:
                         # 합계 사용
                         summary_value = sum(filtered_values)
-                    elif 'SOLAR' in type_upper:
+                    elif 'SOLAR' in type_upper or 'TEMP' in type_upper or 'HUMI' in type_upper or 'PRESS' in type_upper:
                         # 평균값 사용
                         summary_value = statistics.mean(filtered_values)
                     elif 'WIND' in type_upper and 'DIR' in type_upper:
