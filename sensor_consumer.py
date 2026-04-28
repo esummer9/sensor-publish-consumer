@@ -188,15 +188,22 @@ def insert_solar_data(cur, conn, solar_items, sensor_ids):
         farm_id = item.get('FARM_ID')
         collect_date = item.get('created_date_time')
         
-        # 값 파싱 (단일 값이거나 파이프로 구분된 값일 수 있음)
-        val_str = str(item.get('value', None))
-        
-        solar = val_str if val_str != 'None' else None
-        accumulated_solar = None
-        photon = None
-        
-        is_outlier = 0
-        is_missing = 0
+        if item.get('is_summary'):
+            solar = item.get('SOLAR')
+            accumulated_solar = item.get('accumulated_solar')
+            photon = item.get('PHOTON')
+            is_outlier = item.get('outlier_count', 0)
+            is_missing = item.get('missing_count', 0)
+        else:
+            # 값 파싱 (단일 값이거나 파이프로 구분된 값일 수 있음)
+            val_str = str(item.get('value', None))
+            
+            solar = val_str if val_str != 'None' else None
+            accumulated_solar = None
+            photon = None
+            
+            is_outlier = 0
+            is_missing = 0
         
         solar_insert_data.append((
             farm_device_id, farm_id, collect_date, 
@@ -224,26 +231,35 @@ def insert_weather_station_data(cur, conn, weather_station_items, sensor_ids):
         farm_id = item.get('FARM_ID')
         collect_date = item.get('created_date_time')
         
-        val_str = str(item.get('value', None))
-        val = float(val_str) if (val_str and val_str != 'None') else None
-        
-        desc = item.get('desc', '')
-        
-        outside_co2 = None
-        outside_humidity = None
-        outside_temperature = None
-        outside_wind_direction = None
-        outside_wind_speed = None
-        
-        if 'CO2' in desc:
-            outside_co2 = val
-        elif 'Wind Speed' in desc:
-            outside_wind_speed = val
-        elif 'Wind Direction' in desc:
-            outside_wind_direction = val
+        if item.get('is_summary'):
+            outside_co2 = item.get('CO2')
+            outside_humidity = item.get('HUMI')
+            outside_temperature = item.get('TEMP')
+            outside_wind_direction = item.get('WIND DIR')
+            outside_wind_speed = item.get('WIND SPEED')
+            is_outlier = item.get('outlier_count', 0)
+            is_missing = item.get('missing_count', 0)
+        else:
+            val_str = str(item.get('value', None))
+            val = float(val_str) if (val_str and val_str != 'None') else None
             
-        is_outlier = 0
-        is_missing = 0
+            desc = item.get('desc', '')
+            
+            outside_co2 = None
+            outside_humidity = None
+            outside_temperature = None
+            outside_wind_direction = None
+            outside_wind_speed = None
+            
+            if 'CO2' in desc:
+                outside_co2 = val
+            elif 'Wind Speed' in desc:
+                outside_wind_speed = val
+            elif 'Wind Direction' in desc:
+                outside_wind_direction = val
+                
+            is_outlier = 0
+            is_missing = 0
         
         ws_insert_data.append((
             farm_device_id, farm_id, collect_date, 
@@ -265,84 +281,8 @@ def insert_weather_station_data(cur, conn, weather_station_items, sensor_ids):
             conn.commit()
         except Exception as e:
             print("tb_farmtos_of_collect_weather_station Insert Error:", e)
-
-def insert_fdr_data(cur, conn, fdr_items, sensor_ids):
-    if not fdr_items:
-        return
-        
-    fdr_insert_data = []
-    for item in fdr_items:
-        farm_device_id = sensor_ids.get(item.get('sensor_type'), 0)
-        farm_id = item.get('FARM_ID')
-        collect_date = item.get('created_date_time')
-        
-        val_str = str(item.get('value', None))
-        desc = item.get('desc', '')
-        
-        soil_temperature_value = None
-        soil_humidity_value = None
-        soil_ec = None
-        
-        if '|' in val_str:
-            vals = val_str.split('|')
-            try:
-                soil_humidity_value = float(vals[0]) if len(vals) > 0 and vals[0] and vals[0] != 'None' else None
-                soil_temperature_value = float(vals[1]) if len(vals) > 1 and vals[1] and vals[1] != 'None' else None
-                soil_ec = float(vals[2]) if len(vals) > 2 and vals[2] and vals[2] != 'None' else None
-            except ValueError:
-                pass
-        else:
-            val = None
-            try:
-                val = float(val_str) if (val_str and val_str != 'None') else None
-            except ValueError:
-                pass
-                
-            desc_upper = desc.upper()
-            if 'TEMP' in desc_upper or '온도' in desc_upper:
-                soil_temperature_value = val
-            elif 'HUMI' in desc_upper or '습도' in desc_upper:
-                soil_humidity_value = val
-            elif 'EC' in desc_upper:
-                soil_ec = val
-        
-        is_outlier = 0
-        is_missing = 0
-        
-        sensor_origin = {'temperature': soil_temperature_value, 'humidity': soil_humidity_value, 'ec': soil_ec}
-        fdr_insert_data.append((
-            farm_device_id, farm_id, collect_date, 
-            soil_temperature_value, soil_humidity_value, soil_ec,
-            f'{sensor_origin}', is_outlier, is_missing
-        ))
-        
-    if fdr_insert_data:
-        try:
-            cur.executemany("""
-                INSERT INTO tb_farmtos_of_collect_fdr 
-                (farm_device_id, farm_id, collect_date, 
-                 soil_temperature_value, soil_humidity_value, soil_ec, 
-                 sensor_origin, is_outlier, is_missing) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, fdr_insert_data)
-            conn.commit()
-            
-            # tb_farm_device와 조인하여 위치 정보(latitude, longitude, width_x, height_y) 업데이트 (후처리)
-            cur.execute("""
-                UPDATE tb_farmtos_of_collect_fdr
-                SET 
-                    latitude = (SELECT latitude FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id),
-                    longitude = (SELECT longitude FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id),
-                    width_x = (SELECT width_x FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id),
-                    height_y = (SELECT height_y FROM tb_farm_device WHERE tb_farm_device.farm_device_id = tb_farmtos_of_collect_fdr.farm_device_id)
-                WHERE 
-                    latitude IS NULL 
-                    AND farm_device_id IN (SELECT farm_device_id FROM tb_farm_device)
-            """)
-            conn.commit()
-        except Exception as e:
-            print("tb_farmtos_of_collect_fdr Insert Error:", e)
-
+ 
+ 
 def insert_rain_data(cur, conn, rain_items, sensor_ids):
     if not rain_items:
         return
@@ -353,16 +293,21 @@ def insert_rain_data(cur, conn, rain_items, sensor_ids):
         farm_id = item.get('FARM_ID')
         collect_date = item.get('created_date_time')
         
-        val_str = str(item.get('value', None))
-        
-        raindrop = None
-        try:
-            raindrop = float(val_str) if (val_str and val_str != 'None') else None
-        except ValueError:
-            pass
+        if item.get('is_summary'):
+            raindrop = item.get('RAIN')
+            is_outlier = item.get('outlier_count', 0)
+            is_missing = item.get('missing_count', 0)
+        else:
+            val_str = str(item.get('value', None))
             
-        is_outlier = 0
-        is_missing = 0
+            raindrop = None
+            try:
+                raindrop = float(val_str) if (val_str and val_str != 'None') else None
+            except ValueError:
+                pass
+                
+            is_outlier = 0
+            is_missing = 0
         
         rain_insert_data.append((
             farm_device_id, farm_id, collect_date, 
@@ -380,80 +325,6 @@ def insert_rain_data(cur, conn, rain_items, sensor_ids):
         except Exception as e:
             print("tb_farmtos_of_collect_raindrop Insert Error:", e)
 
-
-async def db_of_writer():
-    sensor_ids = {"rs485_1":21, "rs485_2":18, "a0":23, "a1":22, "a2":19, "a3":20}
-
-    while True:
-        await asyncio.sleep(2)
-        if db_of_buffer:
-            items = db_of_buffer[:]
-            db_of_buffer.clear()
-            
-            try:
-                conn = sqlite3.connect(OF_DB_FILE)
-                cur = conn.cursor()
-                
-                fdr_items = []
-                solar_items = []
-                rain_items = []
-                weather_station_items = []
-                other_items = []
-
-                for item in items:
-                    sensor_type = item[0]
-                    if "rs485_1" in sensor_type:
-                        # fdr_items.append(item[1])
-                        # 노지의 경우 fdr 센서는 안쓰므로 주석처리
-                        pass
-                    elif "rs485_2" in sensor_type:
-                        solar_items.append(item[1])
-                    elif "a0" in sensor_type:
-                        weather_station_items.append(item[1])
-                    elif "a1" in sensor_type: 
-                        rain_items.append(item[1])
-                    elif "a2" in sensor_type:   
-                        weather_station_items.append(item[1])
-                    elif "a3" in sensor_type:   
-                        weather_station_items.append(item[1])
-                    else:
-                        other_items.append(item)
-
-                print(f"--- fdr_items ({len(fdr_items)}건) ---")
-                insert_fdr_data(cur, conn, fdr_items, sensor_ids)
-                
-                print(f"--- solar_items ({len(solar_items)}건) ---")
-                # 별도 분리된 함수로 solar_items db 등록 호출
-                insert_solar_data(cur, conn, solar_items, sensor_ids)
-
-                print(f"--- rain_items ({len(rain_items)}건) ---")
-                insert_rain_data(cur, conn, rain_items, sensor_ids)
-                
-                print(f"--- weather_station_items ({len(weather_station_items)}건) ---")
-                insert_weather_station_data(cur, conn, weather_station_items, sensor_ids)
-
-                print(f"--- other_items ({len(other_items)}건) ---")
-                
-                created_date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                for i in other_items: print(i)
-                
-                print(f"{'=' * 20} {'Sensor Consumer End :'} {created_date_time} {'=' * 20}")
-
-                # if other_items:
-                #     print(f"--- other_items ({len(other_items)}건) ---")
-                #     for i in other_items: print(i)
-
-                # tb_farmtos_of_collect_fdr | soil_temperature_value | soil_humidity_value | soil_ec
-                # tb_farmtos_of_collect_solar | solar | accumulated_solar
-                # tb_farmtos_of_collect_weather_station | outside_co2 | outside_wind_direction | outside_wind_speed
-                # 
-
-                # print("db_of_buffer: ", len(items), items[0])
-                
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                print("DB Bulk Insert Error:", e)
 
 # MQTT Consumer
 async def mqtt_consumer():
@@ -622,7 +493,7 @@ async def run_summary_routine(interval_value, is_hourly, table_name):
                     summary_value, summary_accumulated_value, data_count, outlier_count, missing_count, interval_value
                 ))
                 
-            if insert_data:
+            if insert_data :
                 cur.executemany(f"""
                     INSERT INTO {table_name} (sensor_line, sensor_type, summary_time, summary_value, summary_accumulated_value, data_count, outlier_count, missing_count, summary_interval)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -632,6 +503,80 @@ async def run_summary_routine(interval_value, is_hourly, table_name):
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {log_prefix} {len(insert_data)} sensor types/lines up to {current_summary_str}.")
                 
             conn.close()
+            
+            if insert_data and not is_hourly:
+                try:
+                    of_conn = sqlite3.connect(OF_DB_FILE)
+                    of_cur = of_conn.cursor()
+                    sensor_ids = {"rs485_1":21, "rs485_2":18, "a0":23, "a1":22, "a2":19, "a3":20}
+                    
+                    pivot_data = {}
+                    for item in insert_data:
+                        s_line = item[0]
+                        s_type = item[1].upper()
+                        s_time = item[2]
+                        s_val = item[3]
+                        s_accum = item[4]
+                        s_outlier = item[6]
+                        s_missing = item[7]
+                        
+                        key = (s_line, s_time)
+                        if key not in pivot_data:
+                            pivot_data[key] = {'farm_device_id': sensor_ids.get(s_line, 0), 'farm_id': FARM_ID, 'outlier': 0, 'missing': 0, 'values': {}, 'accum': {}}
+                        
+                        pivot_data[key]['values'][s_type] = s_val
+                        if s_accum is not None:
+                            pivot_data[key]['accum'][s_type] = s_accum
+                            
+                        pivot_data[key]['outlier'] += s_outlier
+                        pivot_data[key]['missing'] += s_missing
+
+                    outside_weather_list = []
+                    solar_list = []
+                    ws_list = []
+                    rain_list = []
+
+                    for (s_line, s_time), data in pivot_data.items():
+                        item = {
+                            'sensor_type': s_line,
+                            'FARM_ID': data['farm_id'],
+                            'created_date_time': s_time,
+                            'outlier_count': data['outlier'],
+                            'missing_count': data['missing'],
+                            'is_summary': True
+                        }
+                        v = data['values']
+                        a = data['accum']
+
+                        if 'rs485_1' in s_line:
+                            item['TEMP'] = v.get('TEMP', v.get('온도'))
+                            item['HUMI'] = v.get('HUMI', v.get('습도'))
+                            item['EC'] = v.get('EC')
+                            outside_weather_list.append(item)
+                        elif 'rs485_2' in s_line:
+                            item['SOLAR'] = v.get('SOLAR')
+                            item['accumulated_solar'] = a.get('SOLAR')
+                            item['PHOTON'] = v.get('PHOTON')
+                            solar_list.append(item)
+                        elif 'a1' in s_line:
+                            item['RAIN'] = v.get('RAIN')
+                            rain_list.append(item)
+                        elif 'a0' in s_line or 'a2' in s_line or 'a3' in s_line:
+                            item['CO2'] = v.get('CO2')
+                            item['HUMI'] = v.get('HUMI', v.get('습도'))
+                            item['TEMP'] = v.get('TEMP', v.get('온도'))
+                            item['WIND DIR'] = v.get('WIND DIR', v.get('WIND DIRECTION'))
+                            item['WIND SPEED'] = v.get('WIND SPEED')
+                            ws_list.append(item)
+                            
+                    insert_solar_data(of_cur, of_conn, solar_list, sensor_ids)
+                    insert_rain_data(of_cur, of_conn, rain_list, sensor_ids)
+                    insert_weather_station_data(of_cur, of_conn, ws_list, sensor_ids)
+                    insert_weather_station_data(of_cur, of_conn, outside_weather_list, sensor_ids)
+                    
+                    of_conn.close()
+                except Exception as e:
+                    print("Summary OF DB Insert Error:", e)
         except Exception as e:
             err_prefix = "Summarize Hour Routine Error" if is_hourly else "Summarize Routine Error"
             print(f"{err_prefix}:", e)
@@ -642,7 +587,6 @@ async def run_summary_routine(interval_value, is_hourly, table_name):
 async def startup():
     init_db()
     asyncio.create_task(db_writer())
-    # asyncio.create_task(db_of_writer())
     asyncio.create_task(mqtt_consumer())
     asyncio.create_task(stats_routine())
     asyncio.create_task(run_summary_routine(STATS_INTERVAL_MINUTES, False, "sensor_minute_sum"))
